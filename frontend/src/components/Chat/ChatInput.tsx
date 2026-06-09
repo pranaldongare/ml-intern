@@ -25,7 +25,18 @@ const getHfAvatarUrl = (modelId: string) => {
   return `https://huggingface.co/api/avatars/${org}`;
 };
 
+// Local Ollama models don't have an HF org avatar; use the Ollama logo.
+const OLLAMA_AVATAR_URL = 'https://ollama.com/public/ollama.png';
+
 const MODEL_OPTIONS: ModelOption[] = [
+  {
+    id: 'gpt-5.5',
+    name: 'GPT-5.5',
+    description: 'OpenAI',
+    modelPath: 'openai/gpt-5.5',
+    avatarUrl: getHfAvatarUrl('openai/gpt-5.5'),
+    recommended: true,
+  },
   {
     id: 'kimi-k2.6',
     name: 'Kimi K2.6',
@@ -55,6 +66,20 @@ const MODEL_OPTIONS: ModelOption[] = [
     description: 'Together',
     modelPath: 'zai-org/GLM-5.1',
     avatarUrl: getHfAvatarUrl('zai-org/GLM-5.1'),
+  },
+  {
+    id: 'ollama-llama3.1',
+    name: 'Llama 3.1',
+    description: 'Local (Ollama)',
+    modelPath: 'ollama_chat/llama3.1',
+    avatarUrl: OLLAMA_AVATAR_URL,
+  },
+  {
+    id: 'ollama-qwen2.5',
+    name: 'Qwen 2.5',
+    description: 'Local (Ollama)',
+    modelPath: 'ollama_chat/qwen2.5',
+    avatarUrl: OLLAMA_AVATAR_URL,
   },
 ];
 

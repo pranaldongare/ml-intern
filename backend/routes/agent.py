@@ -43,6 +43,13 @@ router = APIRouter(prefix="/api", tags=["agent"])
 
 AVAILABLE_MODELS = [
     {
+        "id": "openai/gpt-5.5",
+        "label": "GPT-5.5",
+        "provider": "openai",
+        "tier": "byok",
+        "recommended": True,
+    },
+    {
         "id": "moonshotai/Kimi-K2.6",
         "label": "Kimi K2.6",
         "provider": "huggingface",
@@ -67,6 +74,18 @@ AVAILABLE_MODELS = [
         "label": "GLM 5.1",
         "provider": "huggingface",
         "tier": "free",
+    },
+    {
+        "id": "ollama_chat/llama3.1",
+        "label": "Llama 3.1 (local)",
+        "provider": "ollama",
+        "tier": "local",
+    },
+    {
+        "id": "ollama_chat/qwen2.5",
+        "label": "Qwen 2.5 (local)",
+        "provider": "ollama",
+        "tier": "local",
     },
 ]
 

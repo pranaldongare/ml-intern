@@ -17,6 +17,10 @@ from huggingface_hub import HfApi
 
 from agent.tools.sandbox_client import Sandbox
 
+# Planner mode: the HF Sandbox is no longer wired into the product. This live
+# test is retained alongside the dormant sandbox client but skipped.
+pytestmark = pytest.mark.skip(reason="HF Sandbox removed in planner mode")
+
 
 if env_file := os.environ.get("ML_INTERN_LIVE_ENV_FILE"):
     load_dotenv(Path(env_file))

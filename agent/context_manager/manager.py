@@ -192,19 +192,20 @@ class ContextManager:
             num_tools=len(tool_specs),
         )
 
-        # CLI-specific context for local mode
+        # CLI-specific context for local (planner) mode
         if local_mode:
             import os
             cwd = os.getcwd()
             local_context = (
                 f"\n\n# CLI / Local mode\n\n"
-                f"You are running as a local CLI tool on the user's machine. "
-                f"There is NO sandbox — bash, read, write, and edit operate directly "
-                f"on the local filesystem.\n\n"
+                f"You are running as a local CLI tool on the user's machine in PLANNER mode. "
+                f"You do not execute anything — you may only READ local files (read-only) "
+                f"to inform your plan.\n\n"
                 f"Working directory: {cwd}\n"
-                f"Use absolute paths or paths relative to the working directory. "
-                f"Do NOT use /app/ paths — that is a sandbox convention that does not apply here.\n"
-                f"The sandbox_create tool is NOT available. Run code directly with bash."
+                f"The execution_plan tool writes the runbook to a `runbooks/` directory here, "
+                f"one uniquely-named file per run.\n"
+                f"Use absolute paths or paths relative to the working directory when referring "
+                f"to local files in the plan."
             )
             static_prompt += local_context
 

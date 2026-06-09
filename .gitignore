@@ -62,6 +62,10 @@ hf-agent-leaderboard/
 skills/
 .claude/
 *.jsonl
+
+# Generated runbooks (planner-mode output) and local dev server logs
+runbooks/
+*.log
 *.csv
 
 # ML / Data

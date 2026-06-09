@@ -160,6 +160,27 @@ def _resolve_llm_params(
                 params["output_config"] = {"effort": level}
         return params
 
+    if model_name.startswith(("ollama/", "ollama_chat/")):
+        # Local Ollama models served by a local (or remote) Ollama daemon.
+        # LiteLLM routes ``ollama/`` and ``ollama_chat/`` natively; we just
+        # point it at the daemon. Prefer ``ollama_chat/`` for tool-calling —
+        # transparently upgrade a plain ``ollama/`` id. ``OLLAMA_API_BASE``
+        # overrides the default localhost endpoint.
+        import os as _os
+
+        model = model_name
+        if model.startswith("ollama/"):
+            model = "ollama_chat/" + model[len("ollama/"):]
+        api_base = _os.environ.get("OLLAMA_API_BASE", "http://localhost:11434")
+        # Most local models don't accept a reasoning-effort knob; we omit it
+        # and let the model run with its defaults. strict mode rejects so the
+        # probe cascade lands on "off".
+        if reasoning_effort and strict:
+            raise UnsupportedEffortError(
+                f"Ollama models don't accept effort={reasoning_effort!r}"
+            )
+        return {"model": model, "api_base": api_base}
+
     if model_name.startswith("bedrock/"):
         # LiteLLM routes ``bedrock/...`` through the Converse adapter, which
         # picks up AWS credentials from the standard env vars

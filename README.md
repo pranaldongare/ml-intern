@@ -4,7 +4,15 @@
 
 # ML Intern
 
-An ML intern that autonomously researches, writes, and ships good quality ML related code using the Hugging Face ecosystem — with deep access to docs, papers, datasets, and cloud compute.
+An ML intern that autonomously researches and **plans** good-quality ML work using the Hugging Face ecosystem — with deep access to docs, papers, and datasets.
+
+## Planner mode
+
+ML Intern runs as a **planner**: it researches a task thoroughly with read-only tools (papers, docs, datasets, GitHub examples, web search) and then hands off a single, complete, runnable **runbook** via the `execution_plan` tool — documenting every step it would take. It stops right before execution.
+
+- **It does not execute anything.** There is no HF Sandbox, no local shell, and no HF Jobs runner. The agent cannot run code, launch jobs, or modify Hub repos.
+- Each run writes a uniquely-named runbook to `runbooks/RUNBOOK-<YYYYMMDD-HHMMSS>-<slug>.md` in the working directory, so successive runs never overwrite each other.
+- An HF token is still required — it is used for HF model/dataset/docs/paper lookups during research.
 
 ## Quick Start
 
@@ -55,6 +63,20 @@ ml-intern --model openai/gpt-5.5 "your prompt"
 ml-intern --max-iterations 100 "your prompt"
 ml-intern --no-stream "your prompt"
 ```
+
+### Local models via Ollama
+
+ML Intern can use a local [Ollama](https://ollama.com) model as the reasoning LLM. Install Ollama, pull a tool-capable model, and point ML Intern at it:
+
+```bash
+ollama pull llama3.1
+ml-intern --model ollama_chat/llama3.1 "plan a fine-tune of a small model on my dataset"
+```
+
+- Use the `ollama_chat/<model>` prefix for the best tool-calling behavior (a plain `ollama/<model>` id is auto-upgraded). Override the daemon endpoint with `OLLAMA_API_BASE` (default `http://localhost:11434`).
+- Tool-calling reliability varies by model — prefer tool-capable models (e.g. `llama3.1`, `qwen2.5`). Small models may emit invalid tool calls.
+- Local models often have small context windows; very large research contexts may compact frequently.
+- Note: only the *reasoning LLM* becomes local. The research tools still call Hugging Face / GitHub / the web and need an HF token + network.
 
 ## Supported Gateways
 

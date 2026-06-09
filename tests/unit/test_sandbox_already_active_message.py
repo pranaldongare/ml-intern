@@ -15,7 +15,13 @@ from what's already active.
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from agent.tools.sandbox_tool import sandbox_create_handler
+
+# Planner mode: the HF Sandbox is no longer registered as an agent tool.
+# Source kept for reversibility; this regression test covers unwired behavior.
+pytestmark = pytest.mark.skip(reason="HF Sandbox removed in planner mode")
 
 
 def _session_with_sandbox():

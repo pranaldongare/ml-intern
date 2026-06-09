@@ -37,21 +37,22 @@ from agent.tools.github_read_file import (
     GITHUB_READ_FILE_TOOL_SPEC,
     github_read_file_handler,
 )
-from agent.tools.hf_repo_files_tool import (
-    HF_REPO_FILES_TOOL_SPEC,
-    hf_repo_files_handler,
+from agent.tools.execution_plan_tool import (
+    EXECUTION_PLAN_TOOL_SPEC,
+    execution_plan_handler,
 )
-from agent.tools.hf_repo_git_tool import (
-    HF_REPO_GIT_TOOL_SPEC,
-    hf_repo_git_handler,
-)
-from agent.tools.jobs_tool import HF_JOBS_TOOL_SPEC, hf_jobs_handler
 from agent.tools.notify_tool import NOTIFY_TOOL_SPEC, notify_handler
 from agent.tools.papers_tool import HF_PAPERS_TOOL_SPEC, hf_papers_handler
 from agent.tools.plan_tool import PLAN_TOOL_SPEC, plan_tool_handler
 from agent.tools.research_tool import RESEARCH_TOOL_SPEC, research_handler
-from agent.tools.sandbox_tool import get_sandbox_tools
 from agent.tools.web_search_tool import WEB_SEARCH_TOOL_SPEC, web_search_handler
+
+# NOTE: Planner mode — ML Intern no longer EXECUTES anything. The HF Sandbox
+# (sandbox_tool / sandbox_client), HF Jobs (jobs_tool), local shell + file
+# mutation (local_tools bash/write/edit), and Hub repo mutations
+# (hf_repo_files / hf_repo_git) are intentionally NOT registered. The agent
+# researches with read-only tools and hands off an `execution_plan` runbook.
+# The source files are kept on disk for reversibility.
 
 # NOTE: Private HF repo tool disabled - replaced by hf_repo_files and hf_repo_git
 # from agent.tools.private_hf_repo_tools import (
@@ -339,25 +340,6 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
             handler=notify_handler,
         ),
         ToolSpec(
-            name=HF_JOBS_TOOL_SPEC["name"],
-            description=HF_JOBS_TOOL_SPEC["description"],
-            parameters=HF_JOBS_TOOL_SPEC["parameters"],
-            handler=hf_jobs_handler,
-        ),
-        # HF Repo management tools
-        ToolSpec(
-            name=HF_REPO_FILES_TOOL_SPEC["name"],
-            description=HF_REPO_FILES_TOOL_SPEC["description"],
-            parameters=HF_REPO_FILES_TOOL_SPEC["parameters"],
-            handler=hf_repo_files_handler,
-        ),
-        ToolSpec(
-            name=HF_REPO_GIT_TOOL_SPEC["name"],
-            description=HF_REPO_GIT_TOOL_SPEC["description"],
-            parameters=HF_REPO_GIT_TOOL_SPEC["parameters"],
-            handler=hf_repo_git_handler,
-        ),
-        ToolSpec(
             name=GITHUB_FIND_EXAMPLES_TOOL_SPEC["name"],
             description=GITHUB_FIND_EXAMPLES_TOOL_SPEC["description"],
             parameters=GITHUB_FIND_EXAMPLES_TOOL_SPEC["parameters"],
@@ -377,12 +359,25 @@ def create_builtin_tools(local_mode: bool = False) -> list[ToolSpec]:
         ),
     ]
 
-    # Sandbox or local tools (highest priority)
-    if local_mode:
-        from agent.tools.local_tools import get_local_tools
-        tools = get_local_tools() + tools
-    else:
-        tools = get_sandbox_tools() + tools
+    # Planner mode: the execution_plan tool is the agent's single terminal
+    # deliverable. Listed first so it reads as the most important tool.
+    # `local_mode` no longer changes the toolset — there is no execution path
+    # (no sandbox, no shell) — but the param is kept for call-site compatibility.
+    tools = [
+        ToolSpec(
+            name=EXECUTION_PLAN_TOOL_SPEC["name"],
+            description=EXECUTION_PLAN_TOOL_SPEC["description"],
+            parameters=EXECUTION_PLAN_TOOL_SPEC["parameters"],
+            handler=execution_plan_handler,
+        ),
+    ] + tools
+
+    # Read-only local file access (no bash/write/edit). Lets the planner read
+    # user-provided files in the working directory; it executes nothing.
+    from agent.tools.local_tools import get_local_tools
+
+    read_only = [t for t in get_local_tools() if t.name == "read"]
+    tools = read_only + tools
 
     tool_names = ", ".join([t.name for t in tools])
     logger.info(f"Loaded {len(tools)} built-in tools: {tool_names}")

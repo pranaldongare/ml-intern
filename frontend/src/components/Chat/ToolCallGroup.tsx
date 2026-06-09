@@ -7,6 +7,7 @@ import HourglassEmptyIcon from '@mui/icons-material/HourglassEmpty';
 import LaunchIcon from '@mui/icons-material/Launch';
 import SendIcon from '@mui/icons-material/Send';
 import BlockIcon from '@mui/icons-material/Block';
+import MarkdownContent from '@/components/Chat/MarkdownContent';
 import { useAgentStore, type ResearchAgentState } from '@/store/agentStore';
 import { useLayoutStore } from '@/store/layoutStore';
 import { logger } from '@/utils/logger';
@@ -1249,6 +1250,36 @@ export default function ToolCallGroup({ tools, approveTools }: ToolCallGroupProp
               {/* Research sub-agent rolling steps (visible only while running) */}
               {tool.toolName === 'research' && !cancelled && state !== 'output-available' && state !== 'output-error' && state !== 'output-denied' && researchAgents[tool.toolCallId] && (
                 <ResearchSteps steps={researchAgents[tool.toolCallId].steps} />
+              )}
+
+              {/* Execution plan (runbook) — render the plan inline so the
+                  user sees the deliverable without opening a side panel. */}
+              {tool.toolName === 'execution_plan'
+                && !isPending
+                && !isRejected
+                && !cancelled
+                && !!tool.output && (
+                <Box
+                  sx={{
+                    mx: 1.5,
+                    mb: 1.5,
+                    p: 2,
+                    bgcolor: 'var(--code-panel-bg)',
+                    border: '1px solid var(--tool-border)',
+                    borderLeft: '3px solid var(--accent-green)',
+                    borderRadius: '8px',
+                    maxHeight: 520,
+                    overflow: 'auto',
+                  }}
+                >
+                  <Typography
+                    variant="body2"
+                    sx={{ color: 'var(--accent-green)', fontWeight: 600, fontSize: '0.72rem', mb: 1, letterSpacing: '0.03em' }}
+                  >
+                    📋 RUNBOOK — plan only, nothing was executed
+                  </Typography>
+                  <MarkdownContent content={String(tool.output)} />
+                </Box>
               )}
 
               {/* Trackio dashboard embed — shown for hf_jobs / sandbox_create runs that declared a trackio space */}

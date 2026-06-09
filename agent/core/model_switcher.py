@@ -32,6 +32,8 @@ SUGGESTED_MODELS = [
     {"id": "MiniMaxAI/MiniMax-M2.7", "label": "MiniMax M2.7"},
     {"id": "moonshotai/Kimi-K2.6", "label": "Kimi K2.6"},
     {"id": "zai-org/GLM-5.1", "label": "GLM 5.1"},
+    {"id": "ollama_chat/llama3.1", "label": "Llama 3.1 (local Ollama)"},
+    {"id": "ollama_chat/qwen2.5", "label": "Qwen 2.5 (local Ollama)"},
 ]
 
 
@@ -66,7 +68,16 @@ def _print_hf_routing_info(model_id: str, console) -> bool:
     Anthropic / OpenAI ids return ``True`` without printing anything —
     the probe below covers "does this model exist".
     """
-    if model_id.startswith(("anthropic/", "openai/")):
+    if model_id.startswith(("anthropic/", "openai/", "ollama/", "ollama_chat/")):
+        if model_id.startswith(("ollama/", "ollama_chat/")):
+            import os
+
+            base = os.environ.get("OLLAMA_API_BASE", "http://localhost:11434")
+            console.print(f"  [dim]local Ollama model via {base}[/dim]")
+            console.print(
+                "  [dim]note: tool-calling reliability depends on the model; "
+                "prefer tool-capable models (e.g. llama3.1, qwen2.5).[/dim]"
+            )
         return True
 
     from agent.core import hf_router_catalog as cat

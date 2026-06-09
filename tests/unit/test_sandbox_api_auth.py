@@ -1,6 +1,13 @@
+import pytest
 from fastapi.testclient import TestClient
 
 from agent.tools.sandbox_client import _SANDBOX_SERVER, Sandbox
+
+# Planner mode: the HF Sandbox is no longer registered as an agent tool
+# (see agent/core/tools.py). The sandbox client/tool source is kept on disk
+# for reversibility, but these tests cover a feature that is no longer wired
+# into the product, so they are skipped.
+pytestmark = pytest.mark.skip(reason="HF Sandbox removed in planner mode")
 
 
 def _sandbox_app(
