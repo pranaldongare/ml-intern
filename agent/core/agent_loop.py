@@ -135,7 +135,9 @@ def _validate_tool_args(tool_args: dict) -> tuple[bool, str | None]:
     return True, None
 
 
-def _recover_tool_calls_from_content(content: str) -> list["ToolCall"]:
+def _recover_tool_calls_from_content(
+    content: str, known_tools: set[str] | None = None
+) -> list["ToolCall"]:
     """Recover tool calls a model emitted as a JSON blob in the message
     *content* instead of the structured ``tool_calls`` field.
 
@@ -144,37 +146,36 @@ def _recover_tool_calls_from_content(content: str) -> list["ToolCall"]:
     call as text, e.g. ``{"tool_calls": [{"name": ..., "arguments": {...}}]}``
     or a bare ``{"name": ..., "arguments": {...}}``. Without this the agent
     loop sees a text-only turn and stops — so e.g. an ``execution_plan`` call
-    never runs and no runbook is written. We parse those shapes back into
-    real ToolCall objects so the normal dispatch path can execute them.
+    never runs and no runbook is written.
+
+    This is deliberately CONSERVATIVE to avoid false positives: a small model's
+    first turn is often reasoning text that incidentally contains JSON (and the
+    planner prompt literally describes the execution_plan schema, which the
+    model may echo). Recovering from that would fabricate a bogus/premature
+    tool call. So we only recover when:
+      * the content (after optional ```json fence) parses *entirely* as one
+        JSON object — not a JSON span dug out of surrounding prose, and
+      * the recovered name is an actually-registered tool (when ``known_tools``
+        is provided).
     """
     if not content or "{" not in content:
-        logger.info("[plan-trace] recover: no JSON braces in content — nothing to recover")
         return []
     text = content.strip()
-    # Strip a leading ```json / ``` code fence if the model wrapped the blob.
+    # Strip a wrapping ```json / ``` code fence if the model used one.
     if text.startswith("```"):
         text = text.strip("`").strip()
         if text[:4].lower() == "json":
             text = text[4:].strip()
 
-    data = None
+    # Require the WHOLE message to be a single JSON object. We intentionally do
+    # NOT dig a {...} span out of prose — that grabs JSON from reasoning text
+    # and fabricates calls the model never intended.
     try:
         data = json.loads(text)
-        logger.info("[plan-trace] recover: parsed full content as JSON")
     except (json.JSONDecodeError, ValueError):
-        # Fall back to the largest {...} span in the text.
-        start, end = text.find("{"), text.rfind("}")
-        if start != -1 and end > start:
-            try:
-                data = json.loads(text[start : end + 1])
-                logger.info("[plan-trace] recover: parsed JSON from largest {...} span")
-            except (json.JSONDecodeError, ValueError) as e:
-                logger.info("[plan-trace] recover: brace-span JSON parse FAILED: %s", e)
-                return []
-        else:
-            logger.info("[plan-trace] recover: full parse failed and no {...} span found")
+        logger.info("[plan-trace] recover: content is not a single JSON object — not recovering")
+        return []
     if not isinstance(data, dict):
-        logger.info("[plan-trace] recover: parsed JSON is not an object (type=%s)", type(data).__name__)
         return []
 
     raw_calls = data.get("tool_calls")
@@ -182,7 +183,7 @@ def _recover_tool_calls_from_content(content: str) -> list["ToolCall"]:
         raw_calls = [data]
     if not isinstance(raw_calls, list):
         logger.info(
-            "[plan-trace] recover: parsed JSON has no usable tool call shape (top-level keys=%s)",
+            "[plan-trace] recover: JSON object has no tool-call shape (top-level keys=%s)",
             list(data.keys())[:10],
         )
         return []
@@ -194,6 +195,13 @@ def _recover_tool_calls_from_content(content: str) -> list["ToolCall"]:
         fn = rc["function"] if isinstance(rc.get("function"), dict) else rc
         name = fn.get("name")
         if not name:
+            continue
+        if known_tools is not None and name not in known_tools:
+            logger.info(
+                "[plan-trace] recover: dropping recovered call to unknown tool %r "
+                "(not registered) — likely echoed schema, not a real call",
+                name,
+            )
             continue
         raw_args = fn.get("arguments", fn.get("parameters", {}))
         args_str = raw_args if isinstance(raw_args, str) else json.dumps(raw_args or {})
@@ -1099,7 +1107,12 @@ class Handlers:
                 # instead of the structured tool_calls field. Recover it so
                 # the call (e.g. execution_plan) actually runs.
                 if not tool_calls and content:
-                    recovered = _recover_tool_calls_from_content(content)
+                    known_tools = (
+                        set(session.tool_router.tools.keys())
+                        if session.tool_router is not None
+                        else None
+                    )
+                    recovered = _recover_tool_calls_from_content(content, known_tools)
                     logger.info(
                         "[plan-trace] no structured tool_calls; recovery from content "
                         "found=%d names=%s",
