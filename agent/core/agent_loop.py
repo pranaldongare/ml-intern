@@ -110,6 +110,67 @@ def _validate_tool_args(tool_args: dict) -> tuple[bool, str | None]:
     return True, None
 
 
+def _recover_tool_calls_from_content(content: str) -> list["ToolCall"]:
+    """Recover tool calls a model emitted as a JSON blob in the message
+    *content* instead of the structured ``tool_calls`` field.
+
+    Some local models served via Ollama (and other OpenAI-compatible local
+    backends) don't reliably populate ``tool_calls``. Instead they print the
+    call as text, e.g. ``{"tool_calls": [{"name": ..., "arguments": {...}}]}``
+    or a bare ``{"name": ..., "arguments": {...}}``. Without this the agent
+    loop sees a text-only turn and stops — so e.g. an ``execution_plan`` call
+    never runs and no runbook is written. We parse those shapes back into
+    real ToolCall objects so the normal dispatch path can execute them.
+    """
+    if not content or "{" not in content:
+        return []
+    text = content.strip()
+    # Strip a leading ```json / ``` code fence if the model wrapped the blob.
+    if text.startswith("```"):
+        text = text.strip("`").strip()
+        if text[:4].lower() == "json":
+            text = text[4:].strip()
+
+    data = None
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        # Fall back to the largest {...} span in the text.
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            try:
+                data = json.loads(text[start : end + 1])
+            except (json.JSONDecodeError, ValueError):
+                return []
+    if not isinstance(data, dict):
+        return []
+
+    raw_calls = data.get("tool_calls")
+    if raw_calls is None and "name" in data and ("arguments" in data or "parameters" in data):
+        raw_calls = [data]
+    if not isinstance(raw_calls, list):
+        return []
+
+    recovered: list[ToolCall] = []
+    for i, rc in enumerate(raw_calls):
+        if not isinstance(rc, dict):
+            continue
+        fn = rc["function"] if isinstance(rc.get("function"), dict) else rc
+        name = fn.get("name")
+        if not name:
+            continue
+        raw_args = fn.get("arguments", fn.get("parameters", {}))
+        args_str = raw_args if isinstance(raw_args, str) else json.dumps(raw_args or {})
+        recovered.append(
+            ToolCall(
+                id=rc.get("id") or f"recovered_{i}",
+                type="function",
+                function={"name": name, "arguments": args_str},
+            )
+        )
+    return recovered
+
+
 def _needs_approval(
     tool_name: str, tool_args: dict, config: Config | None = None
 ) -> bool:
@@ -985,6 +1046,21 @@ class Handlers:
                         Event(event_type="assistant_stream_end", data={})
                     )
 
+                # Local-model fallback: some Ollama/OpenAI-compatible backends
+                # emit the tool call as a JSON blob in the message content
+                # instead of the structured tool_calls field. Recover it so
+                # the call (e.g. execution_plan) actually runs.
+                if not tool_calls and content:
+                    recovered = _recover_tool_calls_from_content(content)
+                    if recovered:
+                        logger.info(
+                            "Recovered %d tool call(s) from message content "
+                            "(local-model fallback): %s",
+                            len(recovered),
+                            ", ".join(t.function.name for t in recovered),
+                        )
+                        tool_calls = recovered
+
                 # If no tool calls, add assistant message and we're done
                 if not tool_calls:
                     logger.debug(
@@ -1016,7 +1092,15 @@ class Handlers:
                 bad_tools: list[ToolCall] = []
                 for tc in tool_calls:
                     try:
-                        args = json.loads(tc.function.arguments)
+                        raw_args = tc.function.arguments
+                        if isinstance(raw_args, (dict, list)):
+                            # Some local models return arguments already
+                            # parsed (object) rather than a JSON string.
+                            # Normalize so downstream/history stay consistent.
+                            args = raw_args
+                            tc.function.arguments = json.dumps(raw_args)
+                        else:
+                            args = json.loads(raw_args)
                         good_tools.append((tc, tc.function.name, args))
                     except (json.JSONDecodeError, TypeError, ValueError):
                         logger.warning(

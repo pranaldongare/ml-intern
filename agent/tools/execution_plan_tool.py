@@ -57,15 +57,25 @@ def _md_bullets(items: list, empty: str = "_None._") -> str:
 def _render_resources(resources: dict[str, Any]) -> str:
     if not isinstance(resources, dict) or not resources:
         return "_None specified._"
+    # Accept both plural array form ({"models": [...]}) and singular/string
+    # form ({"model": "...", "dataset": "..."}) that weaker models emit.
+    _ALIASES = {
+        "models": ("models", "model"),
+        "datasets": ("datasets", "dataset"),
+        "references": ("references", "reference", "refs", "docs"),
+    }
     lines: list[str] = []
-    for kind in ("models", "datasets", "references"):
-        entries = _as_list(resources.get(kind))
+    rendered_any = False
+    for kind, keys in _ALIASES.items():
+        entries: list = []
+        for k in keys:
+            entries.extend(_as_list(resources.get(k)))
         if not entries:
             continue
         lines.append(f"\n**{kind.capitalize()}:**")
         for e in entries:
             if isinstance(e, dict):
-                label = e.get("id") or e.get("title") or "(unnamed)"
+                label = e.get("id") or e.get("name") or e.get("title") or "(unnamed)"
                 url = e.get("url")
                 why = e.get("why") or e.get("what_we_used") or ""
                 verified = e.get("columns_verified")
@@ -79,7 +89,29 @@ def _render_resources(resources: dict[str, Any]) -> str:
                 lines.append(f"- {' '.join(bits)}")
             else:
                 lines.append(f"- {e}")
-    return "\n".join(lines) if lines else "_None specified._"
+        rendered_any = True
+    # Surface any leftover keys (e.g. {"trl_docs": "..."}) we didn't map above.
+    leftover = {
+        k: v for k, v in resources.items()
+        if k not in {a for keys in _ALIASES.values() for a in keys}
+    }
+    if leftover:
+        lines.append("\n**Other:**")
+        for k, v in leftover.items():
+            lines.append(f"- {k}: {v}")
+        rendered_any = True
+    return "\n".join(lines) if rendered_any else "_None specified._"
+
+
+def _render_action_block(value: Any) -> str:
+    """Render a step's action/code body. If the model already wrapped it in a
+    Markdown code fence, keep it as-is; otherwise wrap it in a bash fence."""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if "```" in text:
+        return f"{text}\n"
+    return f"```bash\n{text}\n```\n"
 
 
 def _render_steps(steps: list) -> str:
@@ -91,19 +123,32 @@ def _render_steps(steps: list) -> str:
         if not isinstance(step, dict):
             out.append(f"### Step {idx}\n\n{step}\n")
             continue
-        sid = step.get("id", str(idx))
-        title = step.get("title", "").strip() or "(untitled)"
+        sid = step.get("id") or step.get("step") or str(idx)
+        title = str(step.get("title", "")).strip() or "(untitled)"
         out.append(f"### Step {sid} — {title}\n")
-        if step.get("rationale"):
-            out.append(f"**Why:** {step['rationale']}\n")
-        if step.get("actions"):
-            out.append(f"**Actions:**\n\n```bash\n{step['actions']}\n```\n")
+        # rationale ← rationale | description (weaker models use "description")
+        rationale = step.get("rationale") or step.get("description")
+        if rationale:
+            out.append(f"**Why:** {rationale}\n")
+        # actions ← actions | code | command | code_change
+        action = (
+            step.get("actions")
+            or step.get("code")
+            or step.get("command")
+            or step.get("code_change")
+        )
+        if action:
+            block = _render_action_block(action)
+            if block:
+                out.append(f"**Actions:**\n\n{block}")
         if step.get("expected_result"):
             out.append(f"**Expected result:** {step['expected_result']}\n")
         if step.get("validation"):
             out.append(f"**Validation:** {step['validation']}\n")
         if step.get("risks"):
-            out.append(f"**Risks:** {step['risks']}\n")
+            risks = step["risks"]
+            risks = "; ".join(str(r) for r in risks) if isinstance(risks, list) else risks
+            out.append(f"**Risks:** {risks}\n")
         out.append("")
     return "\n".join(out)
 
