@@ -30,13 +30,20 @@ from agent.tools.jobs_tool import CPU_FLAVORS
 
 logger = logging.getLogger(__name__)
 
-# Optional verbose planner tracing. The [plan-trace] logs below are INFO level;
-# the web backend logs at INFO so they appear in its log automatically, but the
-# CLI configures logging at WARNING and would hide them. Set ML_INTERN_PLAN_DEBUG=1
-# to force these loggers to INFO (and attach a stderr handler if the host set up
-# none yet) so the trace is captureable however the agent is launched. No-op
-# otherwise.
-if os.environ.get("ML_INTERN_PLAN_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
+def _maybe_enable_plan_trace() -> None:
+    """Force the [plan-trace] INFO logs on when ML_INTERN_PLAN_DEBUG is truthy.
+
+    The [plan-trace] logs are INFO level. The web backend logs at INFO so they
+    appear automatically, but the CLI configures logging at WARNING and would
+    hide them. This raises the two relevant loggers to INFO (and attaches a
+    handler if the host set up none yet). It is called both at import time
+    (covers the backend, which loads .env before importing this module) and at
+    the start of submission_loop (covers the CLI, which loads .env after import
+    but before the loop runs) — so putting ML_INTERN_PLAN_DEBUG=1 in .env works
+    in both cases. Idempotent and a no-op when the flag is unset.
+    """
+    if os.environ.get("ML_INTERN_PLAN_DEBUG", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
     for _trace_logger in ("agent.core.agent_loop", "agent.tools.execution_plan_tool"):
         logging.getLogger(_trace_logger).setLevel(logging.INFO)
     if not logging.getLogger().handlers:
@@ -44,6 +51,9 @@ if os.environ.get("ML_INTERN_PLAN_DEBUG", "").strip().lower() in {"1", "true", "
             level=logging.INFO,
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
+
+
+_maybe_enable_plan_trace()
 
 ToolCall = ChatCompletionMessageToolCall
 
@@ -1710,6 +1720,10 @@ async def submission_loop(
     Main agent loop - processes submissions and dispatches to handlers.
     This is the core of the agent (like submission_loop in codex.rs:1259-1340)
     """
+
+    # Re-check the trace flag now that .env has been loaded (covers the CLI,
+    # which imports this module before loading .env).
+    _maybe_enable_plan_trace()
 
     # Create session with tool router
     session = Session(
