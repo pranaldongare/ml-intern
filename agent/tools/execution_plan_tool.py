@@ -16,6 +16,7 @@ This tool:
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from datetime import datetime
@@ -23,6 +24,8 @@ from pathlib import Path
 from typing import Any
 
 from agent.core.session import Event
+
+logger = logging.getLogger(__name__)
 
 RUNBOOKS_DIR = "runbooks"
 _SLUG_MAX_LEN = 48
@@ -301,11 +304,19 @@ EXECUTION_PLAN_TOOL_SPEC = {
 async def execution_plan_handler(
     arguments: dict[str, Any], session: Any = None, tool_call_id: str | None = None
 ) -> tuple[str, bool]:
+    logger.info(
+        "[plan-trace] execution_plan handler CALLED: arg_keys=%s objective_len=%d steps=%d",
+        list(arguments.keys()),
+        len((arguments.get("objective") or "").strip()),
+        len(_as_list(arguments.get("steps"))),
+    )
     objective = (arguments.get("objective") or "").strip()
     steps = _as_list(arguments.get("steps"))
     if not objective:
+        logger.info("[plan-trace] execution_plan REJECTED: missing objective")
         return "Error: 'objective' is required. Re-call execution_plan with a clear objective.", False
     if not steps:
+        logger.info("[plan-trace] execution_plan REJECTED: missing steps")
         return "Error: 'steps' must contain at least one step. Re-call with concrete steps.", False
 
     markdown = render_markdown(arguments)
@@ -323,8 +334,10 @@ async def execution_plan_handler(
         out_path = out_dir / filename
         out_path.write_text(markdown, encoding="utf-8")
         path_str = str(out_path)
+        logger.info("[plan-trace] RUNBOOK written: %s (%d bytes)", path_str, len(markdown))
     except Exception as e:  # never fail the turn on a write error — UI still gets the plan
         write_error = str(e)
+        logger.warning("[plan-trace] RUNBOOK write FAILED in %s: %s", os.getcwd(), e)
 
     # Surface the runbook to the UI (web + CLI handlers can render this).
     if session is not None:

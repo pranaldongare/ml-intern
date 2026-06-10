@@ -30,6 +30,21 @@ from agent.tools.jobs_tool import CPU_FLAVORS
 
 logger = logging.getLogger(__name__)
 
+# Optional verbose planner tracing. The [plan-trace] logs below are INFO level;
+# the web backend logs at INFO so they appear in its log automatically, but the
+# CLI configures logging at WARNING and would hide them. Set ML_INTERN_PLAN_DEBUG=1
+# to force these loggers to INFO (and attach a stderr handler if the host set up
+# none yet) so the trace is captureable however the agent is launched. No-op
+# otherwise.
+if os.environ.get("ML_INTERN_PLAN_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}:
+    for _trace_logger in ("agent.core.agent_loop", "agent.tools.execution_plan_tool"):
+        logging.getLogger(_trace_logger).setLevel(logging.INFO)
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        )
+
 ToolCall = ChatCompletionMessageToolCall
 
 _MALFORMED_TOOL_PREFIX = "ERROR: Tool call to '"
@@ -123,6 +138,7 @@ def _recover_tool_calls_from_content(content: str) -> list["ToolCall"]:
     real ToolCall objects so the normal dispatch path can execute them.
     """
     if not content or "{" not in content:
+        logger.info("[plan-trace] recover: no JSON braces in content — nothing to recover")
         return []
     text = content.strip()
     # Strip a leading ```json / ``` code fence if the model wrapped the blob.
@@ -134,21 +150,31 @@ def _recover_tool_calls_from_content(content: str) -> list["ToolCall"]:
     data = None
     try:
         data = json.loads(text)
+        logger.info("[plan-trace] recover: parsed full content as JSON")
     except (json.JSONDecodeError, ValueError):
         # Fall back to the largest {...} span in the text.
         start, end = text.find("{"), text.rfind("}")
         if start != -1 and end > start:
             try:
                 data = json.loads(text[start : end + 1])
-            except (json.JSONDecodeError, ValueError):
+                logger.info("[plan-trace] recover: parsed JSON from largest {...} span")
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.info("[plan-trace] recover: brace-span JSON parse FAILED: %s", e)
                 return []
+        else:
+            logger.info("[plan-trace] recover: full parse failed and no {...} span found")
     if not isinstance(data, dict):
+        logger.info("[plan-trace] recover: parsed JSON is not an object (type=%s)", type(data).__name__)
         return []
 
     raw_calls = data.get("tool_calls")
     if raw_calls is None and "name" in data and ("arguments" in data or "parameters" in data):
         raw_calls = [data]
     if not isinstance(raw_calls, list):
+        logger.info(
+            "[plan-trace] recover: parsed JSON has no usable tool call shape (top-level keys=%s)",
+            list(data.keys())[:10],
+        )
         return []
 
     recovered: list[ToolCall] = []
@@ -1046,23 +1072,41 @@ class Handlers:
                         Event(event_type="assistant_stream_end", data={})
                     )
 
+                # [plan-trace] Summary of what the model returned this turn.
+                logger.info(
+                    "[plan-trace] LLM turn %d: finish_reason=%s structured_tool_calls=%d "
+                    "names=%s content_len=%d content_head=%r",
+                    iteration,
+                    finish_reason,
+                    len(tool_calls),
+                    [t.function.name for t in tool_calls],
+                    len(content or ""),
+                    (content or "")[:400],
+                )
+
                 # Local-model fallback: some Ollama/OpenAI-compatible backends
                 # emit the tool call as a JSON blob in the message content
                 # instead of the structured tool_calls field. Recover it so
                 # the call (e.g. execution_plan) actually runs.
                 if not tool_calls and content:
                     recovered = _recover_tool_calls_from_content(content)
+                    logger.info(
+                        "[plan-trace] no structured tool_calls; recovery from content "
+                        "found=%d names=%s",
+                        len(recovered),
+                        [t.function.name for t in recovered],
+                    )
                     if recovered:
-                        logger.info(
-                            "Recovered %d tool call(s) from message content "
-                            "(local-model fallback): %s",
-                            len(recovered),
-                            ", ".join(t.function.name for t in recovered),
-                        )
                         tool_calls = recovered
 
                 # If no tool calls, add assistant message and we're done
                 if not tool_calls:
+                    logger.info(
+                        "[plan-trace] turn ENDED with no tool calls (text-only "
+                        "response). finish_reason=%s content_head=%r",
+                        finish_reason,
+                        (content or "")[:400],
+                    )
                     logger.debug(
                         "Agent loop ending: no tool calls. "
                         "finish_reason=%s, token_count=%d, "
@@ -1110,6 +1154,12 @@ class Handlers:
                         tc.function.arguments = "{}"
                         bad_tools.append(tc)
 
+                logger.info(
+                    "[plan-trace] arg validation: good=%s bad=%s",
+                    [name for _, name, _ in good_tools],
+                    [tc.function.name for tc in bad_tools],
+                )
+
                 # Add assistant message with all tool calls to context
                 assistant_msg = _assistant_message_from_result(
                     llm_result,
@@ -1154,6 +1204,12 @@ class Handlers:
                     else:
                         non_approval_tools.append((tc, tool_name, tool_args))
 
+                logger.info(
+                    "[plan-trace] dispatch split: auto_execute=%s needs_approval=%s",
+                    [n for _, n, _ in non_approval_tools],
+                    [n for _, n, _ in approval_required_tools],
+                )
+
                 # Execute non-approval tools (in parallel when possible)
                 if non_approval_tools:
                     # 1. Validate args upfront
@@ -1189,9 +1245,15 @@ class Handlers:
                         err: str,
                     ) -> tuple[ToolCall, str, dict, str, bool]:
                         if not valid:
+                            logger.info("[plan-trace] tool '%s' SKIPPED (invalid args): %s", name, err)
                             return (tc, name, args, err, False)
+                        logger.info("[plan-trace] executing tool '%s' (id=%s)", name, tc.id)
                         out, ok = await session.tool_router.call_tool(
                             name, args, session=session, tool_call_id=tc.id
+                        )
+                        logger.info(
+                            "[plan-trace] tool '%s' finished: success=%s output_head=%r",
+                            name, ok, (out or "")[:200],
                         )
                         return (tc, name, args, out, ok)
 
