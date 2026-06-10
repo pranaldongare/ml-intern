@@ -30,31 +30,34 @@ class PlanTool:
 
         todos = params.get("todos", [])
 
-        # Validate todos structure
-        for todo in todos:
+        # Normalize todos. Be tolerant of what weaker/local models emit: many
+        # omit "id" (auto-assign by position) and sometimes drop/garble
+        # "status" (default to "pending"). Only "content" is truly required.
+        valid_statuses = ["pending", "in_progress", "completed"]
+        normalized: List[Dict[str, str]] = []
+        for index, todo in enumerate(todos, start=1):
             if not isinstance(todo, dict):
                 return {
                     "formatted": "Error: Each todo must be an object. Re call the tool with correct format (mandatory).",
                     "isError": True,
                 }
 
-            required_fields = ["id", "content", "status"]
-            for field in required_fields:
-                if field not in todo:
-                    return {
-                        "formatted": f"Error: Todo missing required field '{field}'. Re call the tool with correct format (mandatory).",
-                        "isError": True,
-                    }
-
-            # Validate status
-            valid_statuses = ["pending", "in_progress", "completed"]
-            if todo["status"] not in valid_statuses:
+            content = todo.get("content")
+            if not content:
                 return {
-                    "formatted": f"Error: Invalid status '{todo['status']}'. Must be one of: {', '.join(valid_statuses)}. Re call the tool with correct format (mandatory).",
+                    "formatted": "Error: Todo missing required field 'content'. Re call the tool with correct format (mandatory).",
                     "isError": True,
                 }
 
-        # Store the raw todos structure in memory
+            todo_id = str(todo.get("id") or index)
+            status = todo.get("status")
+            if status not in valid_statuses:
+                status = "pending"
+
+            normalized.append({"id": todo_id, "content": str(content), "status": status})
+
+        todos = normalized
+        # Store the normalized todos structure in memory
         _current_plan = todos
 
         # Emit plan update event if session is available

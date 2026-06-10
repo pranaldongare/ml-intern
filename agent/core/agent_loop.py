@@ -179,6 +179,9 @@ def _recover_tool_calls_from_content(
         return []
 
     raw_calls = data.get("tool_calls")
+    # Some models emit tool_calls as a single object instead of a list.
+    if isinstance(raw_calls, dict):
+        raw_calls = [raw_calls]
     if raw_calls is None and "name" in data and ("arguments" in data or "parameters" in data):
         raw_calls = [data]
     if not isinstance(raw_calls, list):
