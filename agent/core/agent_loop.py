@@ -264,6 +264,28 @@ def _recover_tool_calls_from_content(
             logger.info("[plan-trace] recover: extracted tool call from embedded JSON in content")
             return recovered
 
+    # 3) Lenient repair. Small models routinely emit INVALID JSON for large
+    #    tool calls — especially execution_plan, whose args contain code with
+    #    literal newlines and unescaped quotes ("Invalid control character").
+    #    strict json.loads (steps 1-2) can't parse that. json_repair fixes the
+    #    common breakages. Still gated by the known-tool filter, so a repaired
+    #    blob that isn't a real tool call is dropped.
+    try:
+        from json_repair import repair_json
+    except Exception:
+        repair_json = None
+    if repair_json is not None:
+        start, end = text.find("{"), text.rfind("}")
+        candidate = text[start : end + 1] if (start != -1 and end > start) else text
+        try:
+            obj = repair_json(candidate, return_objects=True)
+            recovered = _extract_calls_from_obj(obj, known_tools)
+            if recovered:
+                logger.info("[plan-trace] recover: extracted tool call via JSON repair (malformed JSON)")
+                return recovered
+        except Exception as e:
+            logger.info("[plan-trace] recover: json_repair failed: %s", e)
+
     logger.info("[plan-trace] recover: no usable tool call found in content")
     return []
 

@@ -59,6 +59,22 @@ def test_recover_from_json_fence():
     assert _names("```json\n" + payload + "\n```") == ["research"]
 
 
+# ── Malformed JSON (big execution_plan with inline code) ──────────────
+
+def test_recover_execution_plan_with_invalid_json_code_block():
+    # Real failure mode: code field has literal newlines + unescaped quotes,
+    # which is INVALID json. strict json.loads can't parse it; json_repair can.
+    bad = (
+        '{"tool_calls": {"name": "execution_plan", "arguments": '
+        '{"objective": "LoRA fine-tune", "steps": [{"title": "Train", '
+        '"code": "import torch\nprint("hi")\nmodel = load("qwen")"}]}}}'
+    )
+    import json as _json
+    with pytest.raises(ValueError):
+        _json.loads(bad)  # confirm it is genuinely invalid JSON
+    assert _names(bad) == ["execution_plan"]
+
+
 # ── False-positive guards ─────────────────────────────────────────────
 
 def test_no_recovery_from_plain_prose():

@@ -17,6 +17,7 @@ dependencies = [
     "fastmcp>=3.2.0",
     "prompt-toolkit>=3.0.0",
     "thefuzz>=0.22.1",
+    "json-repair>=0.30.0",
     "rich>=13.0.0",
     "nbconvert>=7.16.6",
     "nbformat>=5.10.4",
