@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -135,60 +136,56 @@ def _validate_tool_args(tool_args: dict) -> tuple[bool, str | None]:
     return True, None
 
 
-def _recover_tool_calls_from_content(
-    content: str, known_tools: set[str] | None = None
+def _find_balanced_json_objects(text: str) -> list[Any]:
+    """Yield top-level ``{...}`` substrings parsed as JSON, scanning with brace
+    balancing (string-aware so braces inside strings don't confuse it). Used to
+    pull a tool-call object out of content that also contains reasoning/prose."""
+    objects: list[Any] = []
+    depth = 0
+    start = None
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    try:
+                        objects.append(json.loads(text[start : i + 1]))
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    start = None
+    return objects
+
+
+def _extract_calls_from_obj(
+    data: Any, known_tools: set[str] | None
 ) -> list["ToolCall"]:
-    """Recover tool calls a model emitted as a JSON blob in the message
-    *content* instead of the structured ``tool_calls`` field.
-
-    Some local models served via Ollama (and other OpenAI-compatible local
-    backends) don't reliably populate ``tool_calls``. Instead they print the
-    call as text, e.g. ``{"tool_calls": [{"name": ..., "arguments": {...}}]}``
-    or a bare ``{"name": ..., "arguments": {...}}``. Without this the agent
-    loop sees a text-only turn and stops — so e.g. an ``execution_plan`` call
-    never runs and no runbook is written.
-
-    This is deliberately CONSERVATIVE to avoid false positives: a small model's
-    first turn is often reasoning text that incidentally contains JSON (and the
-    planner prompt literally describes the execution_plan schema, which the
-    model may echo). Recovering from that would fabricate a bogus/premature
-    tool call. So we only recover when:
-      * the content (after optional ```json fence) parses *entirely* as one
-        JSON object — not a JSON span dug out of surrounding prose, and
-      * the recovered name is an actually-registered tool (when ``known_tools``
-        is provided).
-    """
-    if not content or "{" not in content:
-        return []
-    text = content.strip()
-    # Strip a wrapping ```json / ``` code fence if the model used one.
-    if text.startswith("```"):
-        text = text.strip("`").strip()
-        if text[:4].lower() == "json":
-            text = text[4:].strip()
-
-    # Require the WHOLE message to be a single JSON object. We intentionally do
-    # NOT dig a {...} span out of prose — that grabs JSON from reasoning text
-    # and fabricates calls the model never intended.
-    try:
-        data = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        logger.info("[plan-trace] recover: content is not a single JSON object — not recovering")
-        return []
+    """Turn one parsed JSON object into ToolCall(s) if it has a tool-call shape
+    ({"tool_calls": [...] | {...}} or a bare {"name", "arguments"}). Names not in
+    ``known_tools`` are dropped (guards against echoed schema / hallucinated names)."""
     if not isinstance(data, dict):
         return []
-
     raw_calls = data.get("tool_calls")
-    # Some models emit tool_calls as a single object instead of a list.
-    if isinstance(raw_calls, dict):
+    if isinstance(raw_calls, dict):  # single object instead of a list
         raw_calls = [raw_calls]
     if raw_calls is None and "name" in data and ("arguments" in data or "parameters" in data):
         raw_calls = [data]
     if not isinstance(raw_calls, list):
-        logger.info(
-            "[plan-trace] recover: JSON object has no tool-call shape (top-level keys=%s)",
-            list(data.keys())[:10],
-        )
         return []
 
     recovered: list[ToolCall] = []
@@ -201,7 +198,7 @@ def _recover_tool_calls_from_content(
             continue
         if known_tools is not None and name not in known_tools:
             logger.info(
-                "[plan-trace] recover: dropping recovered call to unknown tool %r "
+                "[plan-trace] recover: dropping call to unknown tool %r "
                 "(not registered) — likely echoed schema, not a real call",
                 name,
             )
@@ -216,6 +213,59 @@ def _recover_tool_calls_from_content(
             )
         )
     return recovered
+
+
+def _recover_tool_calls_from_content(
+    content: str, known_tools: set[str] | None = None
+) -> list["ToolCall"]:
+    """Recover tool calls a model emitted as a JSON blob in the message
+    *content* instead of the structured ``tool_calls`` field.
+
+    Some local models served via Ollama (and other OpenAI-compatible local
+    backends) don't reliably populate ``tool_calls``. Instead they print the
+    call as text — often wrapped in ``<think>...</think>`` reasoning or other
+    prose — e.g. ``{"tool_calls": {"name": ..., "arguments": {...}}}`` or a bare
+    ``{"name": ..., "arguments": {...}}``. Without this the agent loop sees a
+    text-only turn and stops, so the tool (plan_tool, execution_plan, …) never
+    runs.
+
+    Safety against false positives (a model echoing the planner's schema in its
+    reasoning): we strip ``<think>`` blocks first, and every recovered call must
+    name an actually-registered tool (``known_tools``). Unknown names are dropped.
+    """
+    if not content or "{" not in content:
+        return []
+
+    # Drop reasoning blocks (qwen3 etc. emit <think>...</think>) so schema the
+    # model echoes while thinking can't be mistaken for a real call.
+    text = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE).strip()
+    # Strip a wrapping ```json / ``` code fence if present.
+    if text.startswith("```"):
+        text = text.strip("`").strip()
+        if text[:4].lower() == "json":
+            text = text[4:].strip()
+
+    # 1) Fast path: the whole message is a single JSON object.
+    try:
+        whole = json.loads(text)
+        recovered = _extract_calls_from_obj(whole, known_tools)
+        if recovered:
+            logger.info("[plan-trace] recover: parsed whole content as a tool call")
+            return recovered
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # 2) Fallback: the call is embedded in prose/reasoning. Scan for balanced
+    #    JSON objects and accept the first that has a tool-call shape with a
+    #    known tool name.
+    for obj in _find_balanced_json_objects(text):
+        recovered = _extract_calls_from_obj(obj, known_tools)
+        if recovered:
+            logger.info("[plan-trace] recover: extracted tool call from embedded JSON in content")
+            return recovered
+
+    logger.info("[plan-trace] recover: no usable tool call found in content")
+    return []
 
 
 def _needs_approval(
