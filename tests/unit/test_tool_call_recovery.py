@@ -98,6 +98,25 @@ def test_no_recovery_from_schema_echoed_in_think():
 # ── plan_tool tolerance for id-less / status-less todos ───────────────
 
 @pytest.mark.asyncio
+async def test_execution_plan_writes_md_and_pdf(tmp_path, monkeypatch):
+    from agent.tools.execution_plan_tool import execution_plan_handler
+
+    monkeypatch.chdir(tmp_path)
+    args = {
+        "objective": "Fine-tune a model — sentiment",  # contains an em dash
+        "steps": [{"title": "Train", "code": "import torch\nprint('hi')"}],
+    }
+    out, ok = await execution_plan_handler(args)
+    assert ok
+    runbooks = tmp_path / "runbooks"
+    mds = list(runbooks.glob("RUNBOOK-*.md"))
+    pdfs = list(runbooks.glob("RUNBOOK-*.pdf"))
+    assert len(mds) == 1
+    assert len(pdfs) == 1, "PDF runbook should be generated alongside the .md"
+    assert pdfs[0].read_bytes()[:4] == b"%PDF"
+
+
+@pytest.mark.asyncio
 async def test_plan_tool_normalizes_missing_id_and_status():
     args = {"todos": [
         {"content": "Research NER", "status": "in_progress"},

@@ -217,6 +217,102 @@ def render_markdown(plan: dict[str, Any]) -> str:
     return "\n".join(parts).strip() + "\n"
 
 
+# ── PDF rendering ─────────────────────────────────────────────────────
+
+# Core PDF fonts are latin-1; map the few unicode chars our markdown uses to
+# safe ASCII so rendering never errors on them.
+_PDF_CHAR_MAP = {
+    "—": "-", "–": "-",          # em / en dash
+    "→": "->", "←": "<-",        # arrows
+    "•": "*",                          # bullet
+    "‘": "'", "’": "'",          # smart single quotes
+    "“": '"', "”": '"',          # smart double quotes
+    "…": "...",                        # ellipsis
+    "✅": "[x]", "\U0001f4cb": "",     # check mark, clipboard emoji
+}
+
+
+def _latin1(text: str) -> str:
+    for uni, ascii_ in _PDF_CHAR_MAP.items():
+        text = text.replace(uni, ascii_)
+    return text.encode("latin-1", "replace").decode("latin-1")
+
+
+def _render_pdf(markdown_text: str, pdf_path: Path) -> bool:
+    """Best-effort: render the markdown runbook to a PDF at *pdf_path*.
+
+    Uses fpdf2 (pure-Python, no native deps). Parses the runbook's own
+    markdown (headings, blockquote, bullets, fenced code) — we control that
+    format, so a light line parser is sufficient. Returns True on success;
+    never raises, so a PDF problem can't break the turn or the .md output.
+    """
+    try:
+        from fpdf import FPDF
+        from fpdf.enums import XPos, YPos
+    except Exception as e:
+        logger.info("[plan-trace] PDF skipped (fpdf2 not installed: %s)", e)
+        return False
+    try:
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        pdf.set_font("Helvetica", size=11)
+
+        def _cell(text: str, h: float, **kw) -> None:
+            # Always reset the cursor to the left margin and advance down, so
+            # each line gets the full page width (avoids fpdf2's
+            # "Not enough horizontal space" when the cursor stays at the right).
+            pdf.multi_cell(0, h, text, new_x=XPos.LMARGIN, new_y=YPos.NEXT, **kw)
+
+        in_code = False
+        code_buf: list[str] = []
+
+        def _flush_code() -> None:
+            if not code_buf:
+                return
+            pdf.set_font("Courier", size=8)
+            pdf.set_fill_color(244, 244, 244)
+            for cl in code_buf:
+                _cell(cl if cl else " ", 4.5, fill=True)
+            pdf.set_font("Helvetica", size=11)
+            pdf.ln(2)
+            code_buf.clear()
+
+        for raw in markdown_text.split("\n"):
+            line = _latin1(raw.rstrip())
+            if line.strip().startswith("```"):
+                if in_code:
+                    _flush_code()
+                in_code = not in_code
+                continue
+            if in_code:
+                code_buf.append(line)
+                continue
+
+            stripped = line.strip()
+            if not stripped:
+                pdf.ln(3)
+            elif stripped.startswith("### "):
+                pdf.set_font("Helvetica", "B", 12); _cell(stripped[4:], 6); pdf.set_font("Helvetica", size=11); pdf.ln(1)
+            elif stripped.startswith("## "):
+                pdf.set_font("Helvetica", "B", 14); _cell(stripped[3:], 7); pdf.set_font("Helvetica", size=11); pdf.ln(1)
+            elif stripped.startswith("# "):
+                pdf.set_font("Helvetica", "B", 18); _cell(stripped[2:], 9); pdf.set_font("Helvetica", size=11); pdf.ln(2)
+            elif stripped.startswith("> "):
+                pdf.set_text_color(110); pdf.set_font("Helvetica", "I", 10); _cell(stripped[2:], 5); pdf.set_text_color(0); pdf.set_font("Helvetica", size=11)
+            elif stripped[:2] in ("- ", "* "):
+                _cell("  - " + stripped[2:], 5, markdown=True)
+            else:
+                _cell(line, 5, markdown=True)
+
+        _flush_code()
+        pdf.output(str(pdf_path))
+        return True
+    except Exception as e:
+        logger.warning("[plan-trace] PDF generation failed: %s", e)
+        return False
+
+
 # ── tool spec ─────────────────────────────────────────────────────────
 
 EXECUTION_PLAN_TOOL_SPEC = {
@@ -325,8 +421,10 @@ async def execution_plan_handler(
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     slug = _slugify(objective)
     filename = f"RUNBOOK-{ts}-{slug}.md"
+    pdf_filename = f"RUNBOOK-{ts}-{slug}.pdf"
 
     path_str: str | None = None
+    pdf_path_str: str | None = None
     write_error: str | None = None
     try:
         out_dir = Path(os.getcwd()) / RUNBOOKS_DIR
@@ -335,6 +433,11 @@ async def execution_plan_handler(
         out_path.write_text(markdown, encoding="utf-8")
         path_str = str(out_path)
         logger.info("[plan-trace] RUNBOOK written: %s (%d bytes)", path_str, len(markdown))
+        # Also save a PDF alongside the .md (best-effort — never fail the turn).
+        pdf_path = out_dir / pdf_filename
+        if _render_pdf(markdown, pdf_path):
+            pdf_path_str = str(pdf_path)
+            logger.info("[plan-trace] RUNBOOK PDF written: %s", pdf_path_str)
     except Exception as e:  # never fail the turn on a write error — UI still gets the plan
         write_error = str(e)
         logger.warning("[plan-trace] RUNBOOK write FAILED in %s: %s", os.getcwd(), e)
@@ -349,7 +452,9 @@ async def execution_plan_handler(
                         "tool_call_id": tool_call_id,
                         "objective": objective,
                         "path": path_str,
+                        "pdf_path": pdf_path_str,
                         "filename": filename,
+                        "pdf_filename": pdf_filename if pdf_path_str else None,
                         "markdown": markdown,
                     },
                 )
@@ -358,8 +463,9 @@ async def execution_plan_handler(
             pass
 
     if path_str:
+        pdf_note = f"\nPDF: {pdf_path_str}" if pdf_path_str else ""
         return (
-            f"Execution plan written to {path_str}\n\n"
+            f"Execution plan written to {path_str}{pdf_note}\n\n"
             f"This is a plan only — nothing was executed. "
             f"Review the runbook and run it yourself.\n\n"
             f"{markdown}"
