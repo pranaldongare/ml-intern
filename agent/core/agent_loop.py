@@ -1137,6 +1137,18 @@ class Handlers:
                         )
                     )
 
+                # Drop structurally-empty tool calls. Some local-model adapters
+                # fabricate a nameless tool_call when the model actually emitted
+                # the call as text content; dropping them lets the content
+                # recovery below fire instead of dispatching an unnamed tool.
+                _dropped_empty = len(tool_calls)
+                tool_calls = [tc for tc in tool_calls if (tc.function.name or "").strip()]
+                if len(tool_calls) != _dropped_empty:
+                    logger.info(
+                        "[plan-trace] dropped %d nameless structured tool_call(s)",
+                        _dropped_empty - len(tool_calls),
+                    )
+
                 # Signal end of streaming to the frontend
                 if session.stream:
                     await session.send_event(
